@@ -12,8 +12,8 @@ cmake --build build --config Release
 - Settings dialog only appears when user opens it from tray / double click.
 - If previously enabled, optimizer starts automatically using backed-up applied config.
 
-## UI (slider + 2 buttons)
-- **Chế độ**: slider 4 nấc: Recommend / Nhẹ / Trung Bình / Tối đa (chỉ chọn, chưa áp dụng)
+## UI (3 buttons)
+- **Chế độ**: Recommend / Nhẹ / Trung Bình / Tối đa (chỉ chọn, chưa áp dụng)
 - **Reset**: reset **chế độ** về **lần Apply gần nhất** (backup) / nếu chưa có backup thì về khuyến nghị
 - **Apply**: compute per-device tuned config + apply + save backup
 

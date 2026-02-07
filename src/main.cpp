@@ -6,6 +6,9 @@
 #include "../include/ConfigStore.h"
 #include "../include/DeviceTuner.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <commctrl.h>
 #include <atomic>
@@ -68,7 +71,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
-    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES };
+    INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
 
     if (!InitializeApplication(hInstance)) return 1;

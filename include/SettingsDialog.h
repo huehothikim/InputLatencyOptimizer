@@ -1,4 +1,7 @@
 #pragma once
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <string>
 #include "InputThread.h"
@@ -31,8 +34,10 @@ private:
 
     void ApplyMode(Mode mode);
     Mode RecommendModeForDevice() const;
-    void UpdateModeUi();
-HINSTANCE h_instance_;
+    void UpdateModeButtonText();
+    void ShowModeMenu();
+
+    HINSTANCE h_instance_;
     HWND h_dialog_ = nullptr;
     bool is_visible_ = false;
 

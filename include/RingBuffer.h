@@ -4,6 +4,16 @@
 #include <numeric>
 #include <cmath>
 
+
+// Avoid Windows.h min/max macro collisions
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+
+
 template<typename T, size_t N>
 class RingBuffer {
 public:

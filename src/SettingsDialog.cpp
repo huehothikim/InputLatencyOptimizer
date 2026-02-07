@@ -2,7 +2,6 @@
 #include "../include/Resource.h"
 #include "../include/DeviceTuner.h"
 #include "../include/ConfigStore.h"
-#include <commctrl.h>
 #include <strsafe.h>
 
 static const wchar_t* ModeToText(SettingsDialog::Mode m) {
@@ -13,23 +12,6 @@ static const wchar_t* ModeToText(SettingsDialog::Mode m) {
     case SettingsDialog::Mode::Max:    return L"Tối đa";
     default: return L"Recommend";
     }
-}
-
-static int ModeToPos(SettingsDialog::Mode m) {
-    switch (m) {
-    case SettingsDialog::Mode::Recommend: return 0;
-    case SettingsDialog::Mode::Light: return 1;
-    case SettingsDialog::Mode::Medium: return 2;
-    case SettingsDialog::Mode::Max: return 3;
-    default: return 0;
-    }
-}
-
-static SettingsDialog::Mode PosToMode(int pos) {
-    if (pos <= 0) return SettingsDialog::Mode::Recommend;
-    if (pos == 1) return SettingsDialog::Mode::Light;
-    if (pos == 2) return SettingsDialog::Mode::Medium;
-    return SettingsDialog::Mode::Max;
 }
 
 SettingsDialog::SettingsDialog(HINSTANCE hInstance, InputThread& inputThread, AutoStartManager& autoStartManager)
@@ -60,7 +42,7 @@ bool SettingsDialog::Create() {
     if (!h_dialog_) return false;
 
     LoadSettings();
-    UpdateModeUi();
+    UpdateModeButtonText();
     return true;
 }
 
@@ -85,22 +67,91 @@ INT_PTR CALLBACK SettingsDialog::DialogProc(HWND hwnd, UINT msg, WPARAM wParam, 
     return FALSE;
 }
 
+INT_PTR SettingsDialog::HandleMessage(UINT msg, WPARAM wParam, LPARAM) {
+    switch (msg) {
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDC_MODE_BUTTON:
+            if (HIWORD(wParam) == BN_CLICKED) ShowModeMenu();
+            break;
+
+        case IDC_RESET_BUTTON:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                // Reset = revert UI selection back to last applied (backup), NOT uninstall.
+                StoredConfig s{};
+                if (ConfigStore::Load(s) && s.hasAppliedConfig) {
+                    selected_mode_ = static_cast<Mode>(s.appliedMode);
+                    applied_mode_ = static_cast<Mode>(s.appliedMode);
+                    UpdateModeButtonText();
+                    UpdateStatus(L"Reverted to last applied.");
+                } else {
+                    // No backup yet => go to Recommend
+                    selected_mode_ = Mode::Recommend;
+                    UpdateModeButtonText();
+                    UpdateStatus(L"Reverted to recommended.");
+                }
+            }
+            break;
+
+        case IDC_APPLY_BUTTON:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                ApplyMode(selected_mode_);
+                SaveSettings();
+            }
+            break;
+
+        case IDOK:
+        case IDCANCEL:
+            Show(false);
+            return TRUE;
+        }
+        break;
+
+    case WM_CLOSE:
+        Show(false);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 void SettingsDialog::UpdateStatus(const std::wstring& status) {
-    // Minimal UI: use window title as status
     SetWindowTextW(h_dialog_, status.c_str());
 }
 
-void SettingsDialog::UpdateModeUi() {
-    if (!h_dialog_) return;
+void SettingsDialog::UpdateModeButtonText() {
+    wchar_t text[128]{};
+    StringCchPrintfW(text, _countof(text), L"Chế độ: %s", ModeToText(selected_mode_));
+    SetDlgItemTextW(h_dialog_, IDC_MODE_BUTTON, text);
+}
 
-    HWND hSlider = GetDlgItem(h_dialog_, IDC_MODE_SLIDER);
-    if (hSlider) {
-        SendMessageW(hSlider, TBM_SETRANGE, TRUE, MAKELONG(0, 3));
-        SendMessageW(hSlider, TBM_SETTICFREQ, 1, 0);
-        SendMessageW(hSlider, TBM_SETPOS, TRUE, ModeToPos(selected_mode_));
+void SettingsDialog::ShowModeMenu() {
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu) return;
+
+    AppendMenuW(hMenu, MF_STRING, IDM_MODE_RECOMMEND, L"Recommend");
+    AppendMenuW(hMenu, MF_STRING, IDM_MODE_LIGHT,  L"Nhẹ");
+    AppendMenuW(hMenu, MF_STRING, IDM_MODE_MEDIUM, L"Trung Bình");
+    AppendMenuW(hMenu, MF_STRING, IDM_MODE_MAX,    L"Tối đa");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(h_dialog_);
+
+    UINT cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h_dialog_, nullptr);
+    DestroyMenu(hMenu);
+
+    switch (cmd) {
+    case IDM_MODE_RECOMMEND: selected_mode_ = Mode::Recommend; break;
+    case IDM_MODE_LIGHT:  selected_mode_ = Mode::Light; break;
+    case IDM_MODE_MEDIUM: selected_mode_ = Mode::Medium; break;
+    case IDM_MODE_MAX:    selected_mode_ = Mode::Max; break;
+    default: return;
     }
 
-    SetDlgItemTextW(h_dialog_, IDC_MODE_LABEL, ModeToText(selected_mode_));
+    // Save selection immediately (not applied yet)
+    ConfigStore::SaveSelectedMode(static_cast<DWORD>(selected_mode_));
+    UpdateModeButtonText();
 }
 
 InputThread::Config SettingsDialog::ConfigForMode(Mode mode) {
@@ -125,7 +176,7 @@ InputThread::Config SettingsDialog::ConfigForMode(Mode mode) {
 }
 
 SettingsDialog::Mode SettingsDialog::RecommendModeForDevice() const {
-    const auto p = DeviceTuner::CollectProfile();
+    const auto& p = DeviceTuner::CollectProfile();
     const ULONGLONG ramGB = p.ramBytes / (1024ull * 1024ull * 1024ull);
     const bool strongCPU = (p.logicalProcessors >= 8) || (p.cpuMHz >= 3200);
 
@@ -136,25 +187,39 @@ SettingsDialog::Mode SettingsDialog::RecommendModeForDevice() const {
 }
 
 void SettingsDialog::ApplyMode(Mode mode) {
+    // Performance-first tuned config (no auto-disable after user Apply).
     InputThread::Config cfg = ConfigForMode(mode);
 
-    if (!input_thread_.IsRunning()) input_thread_.Start(cfg);
-    else input_thread_.UpdateConfig(cfg);
+    if (!input_thread_.IsRunning()) {
+        input_thread_.Start(cfg);
+    } else {
+        input_thread_.UpdateConfig(cfg);
+    }
 
     applied_mode_ = mode;
     input_thread_.GetMeasurer().Reset();
 
+    // Persist backup of applied tuning
     ConfigStore::SaveApplied(static_cast<DWORD>(mode), cfg, true);
 
     const wchar_t* modeText = ModeToText(mode);
-    wchar_t shown[96]{};
+    wchar_t shown[64]{};
     if (mode == Mode::Recommend) {
-        Mode resolved = RecommendModeForDevice();
-        StringCchPrintfW(shown, _countof(shown), L"%s -> %s", modeText, ModeToText(resolved));
+        // Show resolved tier for clarity
+        const auto p = DeviceTuner::CollectProfile();
+        const ULONGLONG ramGB = p.ramBytes / (1024ull * 1024ull * 1024ull);
+        const bool strongCPU = (p.logicalProcessors >= 8) || (p.cpuMHz >= 3200);
+        const wchar_t* resolved = L"Nhẹ";
+        if (!p.onBattery) {
+            if (strongCPU && ramGB >= 16) resolved = L"Tối đa";
+            else if (p.logicalProcessors >= 4 && ramGB >= 8) resolved = L"Trung Bình";
+            else resolved = L"Nhẹ";
+        }
+        StringCchPrintfW(shown, _countof(shown), L"%s -> %s", modeText, resolved);
         modeText = shown;
     }
 
-    wchar_t s[256]{};
+    wchar_t s[320]{};
     StringCchPrintfW(s, _countof(s),
         L"Applied: %s | Boost:%s | Aff:%s | Proc:%s | Thr:%s",
         modeText,
@@ -162,7 +227,6 @@ void SettingsDialog::ApplyMode(Mode mode) {
         (cfg.enableAffinity && cfg.affinityMask) ? L"ON" : L"OFF",
         cfg.enableProcessPriority ? L"ON" : L"OFF",
         cfg.enableThreadPriority ? L"ON" : L"OFF");
-
     UpdateStatus(s);
 }
 
@@ -170,82 +234,33 @@ void SettingsDialog::LoadSettings() {
     StoredConfig s{};
     bool ok = ConfigStore::Load(s);
 
+    // Selection shown in UI: last selected if available else recommended
     if (ok) selected_mode_ = static_cast<Mode>(s.mode);
     else selected_mode_ = Mode::Recommend;
 
+    // Applied mode: from backup if exists else selection
     if (ok && s.hasAppliedConfig) applied_mode_ = static_cast<Mode>(s.appliedMode);
     else applied_mode_ = selected_mode_;
 
+    // Do NOT show dialog on startup.
+    // If enabled, start optimizer with backed-up config (normalized).
     if (ok && s.enabled) {
         InputThread::Config cfg{};
         if (s.hasAppliedConfig) cfg = s.appliedConfig;
         else cfg = ConfigForMode(applied_mode_);
 
+        // Start exactly as user last applied (no automatic downshift).
         if (!input_thread_.IsRunning()) input_thread_.Start(cfg);
         else input_thread_.UpdateConfig(cfg);
 
         input_thread_.GetMeasurer().Reset();
         UpdateStatus(L"Running (loaded).");
     } else {
-        UpdateStatus(L"Idle.");
+        UpdateStatus(L"Idle (not applied).");
     }
 }
 
 void SettingsDialog::SaveSettings() {
+    // Selection already saved on change; here we only ensure Enabled flag is 1 if applied.
     ConfigStore::SaveEnabled(true);
-}
-
-INT_PTR SettingsDialog::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_INITDIALOG:
-        UpdateModeUi();
-        return TRUE;
-
-    case WM_HSCROLL: {
-        HWND hSlider = GetDlgItem(h_dialog_, IDC_MODE_SLIDER);
-        if ((HWND)lParam == hSlider) {
-            int pos = (int)SendMessageW(hSlider, TBM_GETPOS, 0, 0);
-            selected_mode_ = PosToMode(pos);
-            SetDlgItemTextW(h_dialog_, IDC_MODE_LABEL, ModeToText(selected_mode_));
-            ConfigStore::SaveSelectedMode(static_cast<DWORD>(selected_mode_));
-        }
-        break;
-    }
-
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case IDC_RESET_BUTTON:
-            if (HIWORD(wParam) == BN_CLICKED) {
-                StoredConfig s{};
-                if (ConfigStore::Load(s) && s.hasAppliedConfig) {
-                    selected_mode_ = static_cast<Mode>(s.appliedMode);
-                    applied_mode_ = static_cast<Mode>(s.appliedMode);
-                } else {
-                    selected_mode_ = Mode::Recommend;
-                }
-                UpdateModeUi();
-                UpdateStatus(L"Reset selection.");
-            }
-            break;
-
-        case IDC_APPLY_BUTTON:
-            if (HIWORD(wParam) == BN_CLICKED) {
-                ApplyMode(selected_mode_);
-                SaveSettings();
-            }
-            break;
-
-        case IDOK:
-        case IDCANCEL:
-            Show(false);
-            return TRUE;
-        }
-        break;
-
-    case WM_CLOSE:
-        Show(false);
-        return TRUE;
-    }
-
-    return FALSE;
 }
