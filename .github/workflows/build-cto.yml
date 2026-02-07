@@ -1,0 +1,31 @@
+name: build-cto
+on:
+  workflow_dispatch:
+
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init MSVC x64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build CTO.exe
+        shell: cmd
+        run: |
+          if not exist build mkdir build
+          rc /nologo /fo build\app.res assets\app.rc
+          cl /nologo /std:c++17 /O2 /MT /DNDEBUG /DUNICODE /D_UNICODE /EHsc ^
+            /Iinclude src\*.cpp build\app.res ^
+            /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup ^
+            avrt.lib winmm.lib comctl32.lib psapi.lib taskschd.lib comsuppw.lib shell32.lib ole32.lib oleaut32.lib uuid.lib ^
+            /OUT:build\CTO.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CTO
+          path: build/CTO.exe
